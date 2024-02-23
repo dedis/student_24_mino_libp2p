@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -14,19 +15,17 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-// TODO: review, refactor, write docs
-// TODO: extract streamHandler to displayPings() (represents listener vs dialer sendRandomPings())
-// TODO: debug - displaying received pings stops after 2 messages
-// TODO: stream doc: multiplexed = separate R vs W channels underneath?
-// TODO: #230 Create a buffered stream so that read and writes are non-blocking??
-// TODO: host package doc
+// TODO: test run with 3 nodes
+// TODO: host.Host doc
+// TODO: network.Stream doc
+// TODO: bufio.ReadWriter and io.ReadWriter doc
 // TODO: context.WithCancel() purpose, needed?
-// TODO: change fmt to log
 // TODO example echo host: tests
 
 const (
-	ProtocolPing = protocol.ID("my/ping/1.0.0")
-	N            = 2
+	ProtocolPing  = protocol.ID("my/ping/1.0.0")
+	N             = 2
+	PingDelimiter = '\n'
 )
 
 // set up N nodes to send random pings to each other & display received pings
@@ -35,21 +34,26 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// as listeners: receive pings
-	startPingListeners(nodes)
-	// as dialers: send pings
+	// listen for incoming streams (as listeners)
+	startListeners(nodes, ProtocolPing, func(in network.Stream) {
+		src, dst := in.Conn().RemotePeer(), in.Conn().LocalPeer()
+		log.Printf("%v accepted an incoming stream from %v\n", dst, src)
+		// on listener's side of stream
+		runPingProtocol(len(nodes), in)
+	})
 	fillPeerStores(nodes)
-	writers, err := openPingStreams(nodes)
+	// initiate outgoing streams (as initiators)
+	out, err := openStreams(nodes, ProtocolPing)
 	if err != nil {
 		panic(err)
 	}
-	err = sendRandomPings(nodes, writers)
-	if err != nil {
-		panic(err)
-	}
+	// on initiators' side of streams
+	runPingProtocol(len(nodes), out...)
+
+	select {}
 }
 
-// create N nodes
+// create n nodes
 func createNodes(n int) ([]host.Host, error) {
 	fmt.Printf("creating nodes...\n")
 
@@ -66,24 +70,18 @@ func createNodes(n int) ([]host.Host, error) {
 	return nodes, nil
 }
 
-// listen for pings indefinitely on all nodes & display received pings
-func startPingListeners(nodes []host.Host) {
+// start listening for given protocol indefinitely on all nodes
+func startListeners(nodes []host.Host, pid protocol.ID, handler network.StreamHandler) {
+	log.Printf("starting to listen for protocol %v...", pid)
+
 	for i, node := range nodes {
-		node.SetStreamHandler(ProtocolPing, func(s network.Stream) {
-			reader := bufio.NewReader(s)
-			for {
-				msg, err := reader.ReadString('\n')
-				if err != nil {
-					panic(err)
-				}
-				fmt.Printf("received: %s", msg)
-			}
-		})
-		fmt.Printf("listening for pings on %d/%d nodes...\n", i+1, len(nodes))
+		// handler called as many times as the number of incoming streams
+		node.SetStreamHandler(ProtocolPing, handler)
+		log.Printf("started to listen on %d/%d nodes...\n", i+1, len(nodes))
 	}
 }
 
-// add the addresses of all peers to each node's peer store
+// add addresses of all peers to each node's peer store
 func fillPeerStores(nodes []host.Host) {
 	fmt.Printf("filling peer stores...\n")
 
@@ -99,57 +97,82 @@ func fillPeerStores(nodes []host.Host) {
 	}
 }
 
-// open streams for ping protocol (and connections if not already) between all pairs of nodes
-func openPingStreams(nodes []host.Host) ([][]*bufio.Writer, error) {
-	fmt.Printf("opening ping streams...\n")
+// open outgoing streams for given protocol (and connections if necessary) between all pairs of nodes
+func openStreams(nodes []host.Host, pid protocol.ID) ([]network.Stream, error) {
+	log.Printf("opening streams for protocol %v...\n", pid)
 
-	writers := make([][]*bufio.Writer, len(nodes))
-	totalStreams := len(nodes) * (len(nodes) - 1)
-	count := 0
+	totalStreams := len(nodes) * (len(nodes) - 1) / 2
+	streams := make([]network.Stream, 0, totalStreams)
+	n := 0
 	// between every pair of nodes
 	for si, src := range nodes {
-		writers[si] = make([]*bufio.Writer, len(nodes))
 		for di, dst := range nodes {
-			// don't open stream to node itself
-			if si == di {
+			// don't open stream to self or if already opened by the other side
+			if si >= di {
 				continue
 			}
-			// open stream (note: a connection is bidirectional and is created if not already from either side)
-			s, err := src.NewStream(context.Background(), dst.ID(), ProtocolPing)
+			// open stream (implicitly create connection if not exist)
+			s, err := src.NewStream(context.Background(), dst.ID(), pid)
 			if err != nil {
-				return writers, err
+				return nil, err
 			}
-			// store buffered writer over stream for non-blocking writes
-			writers[si][di] = bufio.NewWriter(s)
-			count++
-			fmt.Printf("opened %d/%d ping streams\n", count, totalStreams)
+			streams = append(streams, s)
+			n++
+			log.Printf("opened %d/%d outgoing streams\n", n, totalStreams)
 		}
 	}
 
-	return writers, nil
+	return streams, nil
 }
 
-// send ping from one random node to another indefinitely
-func sendRandomPings(nodes []host.Host, writers [][]*bufio.Writer) error {
-	fmt.Printf("sending random pings...\n")
+// run ping protocol over given stream(s)
+func runPingProtocol(maxInterval int, streams ...network.Stream) {
+	for _, s := range streams {
+		// send random pings
+		go sendPings(s, maxInterval)
+		// display received pings
+		go readPings(s)
+	}
+}
 
-	for count := 1; ; {
-		// between a random pair of nodes
-		si := rand.Intn(len(nodes))
-		di := rand.Intn(len(nodes))
-		if si == di {
-			continue
-		}
-		// send ping
-		src, dst, writer := nodes[si], nodes[di], writers[si][di]
-		msg := fmt.Sprintf("ping #%d from %v to %v\n", count, src.ID(), dst.ID())
-		_, err := writer.WriteString(msg)
+// send pings indefinitely at random intervals
+func sendPings(s network.Stream, maxInterval int) {
+	src, dst := s.Conn().LocalPeer(), s.Conn().RemotePeer()
+	log.Printf("%v sending pings to %v at random intervals...", src, dst)
+
+	// write indefinitely
+	for n := 1; ; n++ {
+		msg := createPingMessage(src.String(), dst.String(), n)
+		_, err := s.Write([]byte(msg))
 		if err != nil {
-			return err
+			log.Fatalf("could not write stream buffer: %v", err)
+			return
 		}
-		fmt.Printf("sent random ping: %s\n", msg)
-		count++
-		// wait for a fixed interval
-		time.Sleep(3 * time.Second)
+		log.Printf("%v sent ping to %v: %s", src, dst, msg)
+		// wait for random interval
+		time.Sleep(time.Duration(rand.Intn(maxInterval)) * time.Second)
+	}
+}
+
+func createPingMessage(src, dst string, id int) string {
+	// trailing '\n' is important for read to happen successfully
+	return fmt.Sprintf("ping %s%s%d%c", src[len(src)-2:], dst[len(dst)-2:], id, PingDelimiter)
+}
+
+// read and display pings indefinitely
+func readPings(s network.Stream) {
+	src, dst := s.Conn().RemotePeer(), s.Conn().LocalPeer()
+	log.Printf("%v reading pings from %v...", dst, src)
+
+	reader := bufio.NewReader(s)
+	// read indefinitely
+	for {
+		msg, err := reader.ReadString(PingDelimiter)
+		if err != nil {
+			log.Fatalf("could not read stream buffer: %v", err)
+			return
+		}
+		// display pings
+		log.Printf("%v received ping from %v: %s", dst, src, msg)
 	}
 }
