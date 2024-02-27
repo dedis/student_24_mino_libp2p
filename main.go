@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"golang.org/x/xerrors"
 	"log"
 	"math/rand"
 	"time"
@@ -15,53 +16,55 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-// TODO: test run with 3 nodes
-// TODO: host.Host doc
-// TODO: network.Stream doc
-// TODO: bufio.ReadWriter and io.ReadWriter doc
-// TODO: context.WithCancel() purpose, needed?
+// TODO use zerologger: logger = logger.String("node", h.Id())
+// TODO host.Host doc
+// TODO network.Stream doc
+// TODO bufio.ReadWriter and io.ReadWriter doc
+
+// TODO why formatting Peer.Id() type Id string with %s does not call String() like %v?
+// TODO context.WithCancel() purpose, needed?
 // TODO example echo host: tests
 
 const (
 	ProtocolPing  = protocol.ID("my/ping/1.0.0")
-	N             = 2
+	N             = 3
 	PingDelimiter = '\n'
 )
 
 // set up N nodes to send random pings to each other & display received pings
 func main() {
-	nodes, err := createNodes(N)
+	hosts, err := createHosts(N)
 	if err != nil {
 		panic(err)
 	}
 	// listen for incoming streams (as listeners)
-	startListeners(nodes, ProtocolPing, func(in network.Stream) {
+	startListeners(hosts, ProtocolPing, func(in network.Stream) {
 		src, dst := in.Conn().RemotePeer(), in.Conn().LocalPeer()
 		log.Printf("%v accepted an incoming stream from %v\n", dst, src)
 		// on listener's side of stream
-		runPingProtocol(len(nodes), in)
+		runPingProtocol(len(hosts), in)
 	})
-	fillPeerStores(nodes)
+	fillPeerStores(hosts)
 	// initiate outgoing streams (as initiators)
-	out, err := openStreams(nodes, ProtocolPing)
+	out, err := openStreams(hosts, ProtocolPing)
 	if err != nil {
 		panic(err)
 	}
 	// on initiators' side of streams
-	runPingProtocol(len(nodes), out...)
+	runPingProtocol(len(hosts), out...)
 
 	select {}
 }
 
 // create n nodes
-func createNodes(n int) ([]host.Host, error) {
+func createHosts(n int) ([]host.Host, error) {
 	fmt.Printf("creating nodes...\n")
 
 	nodes := make([]host.Host, 0, n)
 	for i := 0; i < n; i++ {
 		node, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 		if err != nil {
-			return nodes, err
+			return nodes, xerrors.Errorf("could not start host: %v", err)
 		}
 		nodes = append(nodes, node)
 		fmt.Printf("created %d/%d nodes: %v\n", i+1, n, getMultiAddress(node))
@@ -77,7 +80,7 @@ func startListeners(nodes []host.Host, pid protocol.ID, handler network.StreamHa
 	for i, node := range nodes {
 		// handler called as many times as the number of incoming streams
 		node.SetStreamHandler(ProtocolPing, handler)
-		log.Printf("started to listen on %d/%d nodes...\n", i+1, len(nodes))
+		log.Printf("started listening on %d/%d nodes...\n", i+1, len(nodes))
 	}
 }
 
@@ -114,7 +117,7 @@ func openStreams(nodes []host.Host, pid protocol.ID) ([]network.Stream, error) {
 			// open stream (implicitly create connection if not exist)
 			s, err := src.NewStream(context.Background(), dst.ID(), pid)
 			if err != nil {
-				return nil, err
+				return nil, xerrors.Errorf("could not open stream: %v", err)
 			}
 			streams = append(streams, s)
 			n++
