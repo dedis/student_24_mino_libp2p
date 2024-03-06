@@ -89,14 +89,17 @@ func connectPeers(h host.Host, p protocol.ID, handler network.StreamHandler) {
 	log.Printf("listening for streams...\n")
 	// initiate outgoing streams
 	log.Printf("opening streams...\n")
-	for _, peerID := range h.Peerstore().Peers() {
-		// TODO: exclude self
-		s, err := h.NewStream(context.Background(), peerID, p)
-		if err != nil {
-			log.Printf("could not open stream to %s: %v\n", peerID, err)
+	for _, id := range h.Peerstore().Peers() {
+		if id == h.ID() {
 			continue
 		}
-		log.Printf("opened stream to %s\n", peerID)
+		s, err := h.NewStream(context.Background(), id, p)
+		if err != nil {
+			// simply fail and expect the other node to connect to us later
+			log.Printf("could not open stream to %s: %v\n", id, err)
+			continue
+		}
+		log.Printf("opened stream to %s\n", id)
 		go handler(s)
 	}
 }
