@@ -219,7 +219,7 @@ func sendPings(s network.Stream, maxInterval int) {
 
 func createPing(src, dst peer.ID, id int) string {
 	// trailing '\n' is important for read to happen successfully
-	return fmt.Sprintf("ping %s%s#%d%c", src[len(src)-2:], dst[len(dst)-2:], id, pingDelimiter)
+	return fmt.Sprintf("ping %s%s#%d%c", src.ShortString(), dst.ShortString(), id, pingDelimiter)
 }
 
 // read and display pings indefinitely

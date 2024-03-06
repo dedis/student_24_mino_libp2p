@@ -17,7 +17,7 @@ import (
 func createHost() (host.Host, error) {
 	log.Printf("creating host...\n")
 
-	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0"))
+	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0/ws"))
 	if err != nil {
 		return nil, xerrors.Errorf("could not create host: %v", err)
 	}
