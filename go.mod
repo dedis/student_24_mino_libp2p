@@ -1,14 +1,13 @@
 module demo
 
-go 1.21
+go 1.22
 
 toolchain go1.22.0
 
 require (
 	github.com/libp2p/go-libp2p v0.33.0
-	github.com/libp2p/go-libp2p-core v0.20.1
 	github.com/multiformats/go-multiaddr v0.12.2
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
+	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028
 )
 
 require (
